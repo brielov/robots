@@ -110,6 +110,11 @@ describe("unusual URLs", () => {
     ["ftp:/a.test/x", "/x"],
     ["s3://b/k", "/k"],
     ["localhost:/x", "/x"],
+    ["///b", "/b"],
+    ["//?a", "/?a"],
+    ["foo:///k", "/k"],
+    ["http://?a/b", "/?a/b"],
+    ["http://#a/b", "/"],
   ])("%j gives %j", (url, expected) => {
     expect(pathOf(url)).toBe(expected);
   });
