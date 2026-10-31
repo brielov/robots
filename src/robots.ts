@@ -7,6 +7,7 @@ import {
   type ParseOptions,
   parseFile,
 } from "./parse.ts";
+import { requestPath } from "./url.ts";
 
 const NO_GROUPS: readonly number[] = [];
 
@@ -32,10 +33,14 @@ export class Agent {
     return delay;
   }
 
-  /** Whether this agent may fetch an absolute URL. */
+  /**
+   * Whether this agent may fetch a URL. The scheme may be left out, as in
+   * `example.com/a`. A string that can't be a URL is read as leniently as
+   * possible instead of throwing, and has the path `/` if nothing else fits.
+   */
   isAllowed(url: string | URL): boolean {
-    const { pathname, search } = typeof url === "string" ? new URL(url) : url;
-    return this.isAllowedPath(pathname + search);
+    // `href`, not `pathname + search`: `search` loses the `?` of an empty query.
+    return this.isAllowedPath(requestPath(typeof url === "string" ? url : url.href));
   }
 
   /**

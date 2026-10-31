@@ -193,7 +193,7 @@ function removeDotSegments(path: string): string {
 }
 
 /** Removes what the URL parser removes before looking at the path at all. */
-function stripIgnored(text: string): string {
+export function stripIgnored(text: string): string {
   let start = 0;
   let end = text.length;
   while (start < end && text.charCodeAt(start) <= SPACE) start++;
