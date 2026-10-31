@@ -5,10 +5,11 @@
  * Ordinary `http(s)://host/...` URLs take the fast route. Anything unusual takes
  * a slower route that treats the string the way a URL parser would, because a
  * crawler's HTTP client will normalize these forms before sending the request.
- * This only locates the path; `canonicalPath` then normalizes what it returns.
+ * Canonicalization runs exactly once, whichever route a URL takes: it isn't
+ * idempotent on malformed escapes.
  */
 
-import { stripIgnored } from "./canonical.ts";
+import { canonicalPath, isCanonicalFrom, stripIgnored } from "./canonical.ts";
 
 const SPACE = 0x20;
 const HASH = 0x23;
@@ -52,19 +53,35 @@ function requestPathSlowly(url: string): string {
   return text.startsWith("//", start) ? afterAuthority(text, start + 2) : afterAuthority(text, 0);
 }
 
-/** Returns everything after the authority; `canonicalPath` drops any fragment. */
-export function requestPath(url: string): string {
+/** Finds where an ordinary URL's authority ends, or returns -1 for anything else. */
+function endOfAuthority(url: string): number {
   let start: number;
   if (url.startsWith("https://")) start = 8;
   else if (url.startsWith("http://")) start = 7;
-  else return requestPathSlowly(url);
+  else return -1;
 
   for (let i = start; i < url.length; i++) {
     const code = url.charCodeAt(i);
-    if (code === SLASH || code === QUESTION || code === HASH) {
-      return i === start ? requestPathSlowly(url) : url.slice(i);
-    }
-    if (code === BACKSLASH || code <= SPACE) return requestPathSlowly(url);
+    if (code === SLASH || code === QUESTION || code === HASH) return i === start ? -1 : i;
+    if (code === BACKSLASH || code <= SPACE) return -1;
   }
-  return "";
+  return url.length;
+}
+
+/** Returns everything after the authority; `canonicalPath` drops any fragment. */
+export function requestPath(url: string): string {
+  const end = endOfAuthority(url);
+  return end < 0 ? requestPathSlowly(url) : url.slice(end);
+}
+
+/**
+ * Returns a URL's canonical path and query. Most URLs are canonical already, so
+ * this scans the URL itself and takes a slice only at the end.
+ */
+export function canonicalRequestPath(url: string): string {
+  const end = endOfAuthority(url);
+  if (end >= 0 && url.charCodeAt(end) === SLASH && isCanonicalFrom(url, end + 1)) {
+    return url.slice(end);
+  }
+  return canonicalPath(end < 0 ? requestPathSlowly(url) : url.slice(end));
 }

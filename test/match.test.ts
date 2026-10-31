@@ -342,6 +342,68 @@ describe("prefix index", () => {
   });
 });
 
+describe("character masks", () => {
+  const blocked = (pattern: string, path: string): boolean =>
+    !parse(`user-agent: *\ndisallow: ${pattern}\n`).agent("a").isAllowedPath(path);
+
+  test.each([
+    ["/*q", "/q", true],
+    ["/*q", "/r", false],
+    ["/*Q", "/q", false],
+    ["/*Q", "/Q", true],
+    ["/*7", "/3", false],
+    ["/*7", "/7", true],
+    ["/*.", "/-", false],
+    ["/*_x", "/_x", true],
+    ["/*?a", "/b?a", true],
+    ["/*?a", "/ba", false],
+    ["/*=", "/a=", true],
+    ["/*&", "/a&", true],
+    ["/*%20", "/a b", true],
+    ["/*~", "/~", true],
+    ["/*+", "/+", true],
+  ])("%j against %j gives %p", (pattern, path, expected) => {
+    expect(blocked(pattern, path)).toBe(expected);
+  });
+
+  test("a rule with two spellings isn't rejected by either's characters", () => {
+    expect(blocked("/x*%2Fq", "/x?a=/q")).toBe(true);
+    expect(blocked("/x*%2Fq", "/x/%2Fq")).toBe(true);
+    expect(blocked("/x*%2Fq", "/x?a=%2Fq")).toBe(true);
+  });
+
+  test("a rejected rule doesn't end the search", () => {
+    const agent = parse("user-agent: *\ndisallow: /*zzzz\ndisallow: /*a\n").agent("a");
+    expect(agent.isAllowedPath("/a")).toBe(false);
+  });
+});
+
+describe("sort keys", () => {
+  const decide = (patterns: string[], path: string): boolean =>
+    isPathAllowed(compileRules(patterns.map((pattern) => ({ allow: false, pattern }))), path);
+
+  test("literals shorter than a key", () => {
+    expect(decide(["/", "/a", "/ab"], "/abc")).toBe(false);
+    expect(decide(["/a", "/ab"], "/b")).toBe(true);
+    expect(decide(["/ab"], "/a")).toBe(true);
+    expect(decide([""], "/")).toBe(false);
+    expect(decide(["/a"], "/")).toBe(true);
+  });
+
+  test("literals that tie on their key are told apart by text", () => {
+    const patterns = ["/abc/x", "/abc/y", "/abc/z"];
+    expect(decide(patterns, "/abc/y/1")).toBe(false);
+    expect(decide(patterns, "/abc/w")).toBe(true);
+    expect(decide(patterns, "/abc/yy")).toBe(false);
+    expect(decide(patterns, "/abd")).toBe(true);
+  });
+
+  test("a path shorter than the key", () => {
+    expect(decide(["/abcd"], "/ab")).toBe(true);
+    expect(decide(["/a"], "/a")).toBe(false);
+  });
+});
+
 describe("wildcards", () => {
   const disallowed = (pattern: string, path: string): boolean =>
     !parse(`user-agent: *\ndisallow: ${pattern}\n`).agent("a").isAllowedPath(path);

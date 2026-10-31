@@ -257,6 +257,49 @@ describe("differential fuzz with canonicalization in play", () => {
   });
 });
 
+describe("differential fuzz across the whole character set", () => {
+  // The character mask and sort key both group characters, so a mistake in
+  // either would only show on some of them.
+  const alphabet = "abcxyzABCXYZ0189-._~:@!&=+,;()[]/?";
+
+  const randomRule = (random: (limit: number) => number): string => {
+    let pattern = `/${randomText(random, alphabet, 4)}`;
+    const stars = random(3);
+    for (let i = 0; i < stars; i++) pattern += `*${randomText(random, alphabet, 3)}`;
+    return random(3) === 0 ? `${pattern}$` : pattern;
+  };
+
+  test.each([51, 52, 53, 54, 55])("seed %d", (seed) => {
+    const random = createRandom(seed);
+    for (let file = 0; file < 1_500; file++) {
+      const rules: Rule[] = [];
+      const ruleCount = 1 + random(25);
+      let text = "user-agent: *\n";
+      for (let i = 0; i < ruleCount; i++) {
+        const raw = randomRule(random);
+        const allow = random(2) === 0;
+        rules.push({ allow, pattern: canonicalPattern(raw) });
+        text += `${allow ? "allow" : "disallow"}: ${raw}\n`;
+      }
+      const agent = parse(text).agent("x");
+      for (let i = 0; i < 20; i++) {
+        // Half the paths start from a rule, so that matches actually happen.
+        const seedRule = rules[random(rules.length)] as Rule;
+        const base =
+          random(2) === 0
+            ? seedRule.pattern.replaceAll("*", randomText(random, alphabet, 2)).replace(/\$$/, "")
+            : `/${randomText(random, alphabet, 10)}`;
+        const path = base.startsWith("/") ? base : `/${base}`;
+        const expected = referenceAllowed(rules, canonicalPath(path), referenceMatchesCanonical);
+        if (agent.isAllowedPath(path) !== expected) {
+          throw new Error(`seed ${seed}, path ${JSON.stringify(path)}, file:\n${text}`);
+        }
+      }
+    }
+    expect(true).toBe(true);
+  });
+});
+
 describe("query delimiter forms", () => {
   const delimiters = [":", "/", "?", "@", "[", "]"];
   const escapes: Record<string, string> = {

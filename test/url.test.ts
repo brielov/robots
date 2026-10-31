@@ -1,9 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { canonicalPath } from "../src/canonical.ts";
 import { parse } from "../src/index.ts";
-import { requestPath } from "../src/url.ts";
+import { canonicalRequestPath, requestPath } from "../src/url.ts";
 
-const pathOf = (url: string): string => canonicalPath(requestPath(url));
+/** Runs both routes, which must always agree. */
+const pathOf = (url: string): string => {
+  const path = canonicalPath(requestPath(url));
+  if (canonicalRequestPath(url) !== path) {
+    throw new Error(`The routes disagree on ${JSON.stringify(url)}`);
+  }
+  return path;
+};
 
 describe("Google's GetPathParamsQuery cases", () => {
   test.each([
@@ -103,6 +110,28 @@ describe("unusual URLs", () => {
     ["ftp:/a.test/x", "/x"],
     ["s3://b/k", "/k"],
     ["localhost:/x", "/x"],
+  ])("%j gives %j", (url, expected) => {
+    expect(pathOf(url)).toBe(expected);
+  });
+});
+
+describe("canonicalRequestPath", () => {
+  test("returns a canonical path as it stands", () => {
+    expect(canonicalRequestPath("https://a.test/b?c=d")).toBe("/b?c=d");
+  });
+
+  test.each([
+    ["https://a.test", "/"],
+    ["https://a.test?q", "/?q"],
+    ["https://a.test#f", "/"],
+    ["https://a.test/a/../b", "/b"],
+    ["https://a.test/%62", "/b"],
+    ["https://a.test/ツ", "/%E3%83%84"],
+    ["https://a.test/a#f", "/a"],
+    ["https://a.test/.", "/"],
+    ["https://a.test/a b", "/a%20b"],
+    ["https://a.test/a?b=/../c", "/a?b=/../c"],
+    ["example.com/a", "/a"],
   ])("%j gives %j", (url, expected) => {
     expect(pathOf(url)).toBe(expected);
   });

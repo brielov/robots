@@ -117,6 +117,15 @@ export function loadCorpus(urlCount = 200): Site[] {
     );
 }
 
+/**
+ * Holds every character class the matcher's mask can see, so no rule is rejected
+ * before the expensive part, and fails rules only late in the path.
+ */
+const HOSTILE_PATH = `/${"abcde-".repeat(667)}x0fghijklmnopqrstuvwxyz?=&._%20~`;
+
+/** Holds every character class, but no `b` after its first `a`. */
+const EARLY_EXIT_PATH = `/bcdefghijklmnopqrstuvwxyz0?=&._%20~a${"-a".repeat(1_980)}`;
+
 /** Shapes a large or adversarial file might take. */
 export function loadSynthetic(): Site[] {
   const manyPrefixes = (count: number): string => {
@@ -179,16 +188,17 @@ export function loadSynthetic(): Site[] {
     // Each rule scans the whole path, then fails on its last middle segment.
     withPaths(
       site("synthetic-wildcards-near-miss", wildcards(1_000), 0),
-      Array.from({ length: 50 }, () => `/${"abcde-".repeat(667)}`),
+      Array.from({ length: 50 }, () => HOSTILE_PATH),
     ),
     // Each rule reaches its unanchored final segment, then fails there.
     withPaths(
       site("synthetic-wildcards-final-segment", finalSegments(1_000), 0),
-      Array.from({ length: 50 }, () => `/${"abcde-".repeat(667)}`),
+      Array.from({ length: 50 }, () => HOSTILE_PATH),
     ),
+    // Each rule passes the mask, then fails on its second segment.
     withPaths(
       site("synthetic-wildcards-early-exit", wildcards(1_000), 0),
-      Array.from({ length: 50 }, () => `/${"a-".repeat(2_000)}`),
+      Array.from({ length: 50 }, () => EARLY_EXIT_PATH),
     ),
   ];
 }

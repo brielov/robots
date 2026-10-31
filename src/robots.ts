@@ -7,7 +7,7 @@ import {
   type ParseOptions,
   parseFile,
 } from "./parse.ts";
-import { requestPath } from "./url.ts";
+import { canonicalRequestPath } from "./url.ts";
 
 const NO_GROUPS: readonly number[] = [];
 
@@ -40,7 +40,7 @@ export class Agent {
    */
   isAllowed(url: string | URL): boolean {
     // `href`, not `pathname + search`: `search` loses the `?` of an empty query.
-    return this.isAllowedPath(requestPath(typeof url === "string" ? url : url.href));
+    return this.#decide(canonicalRequestPath(typeof url === "string" ? url : url.href));
   }
 
   /**
@@ -48,8 +48,12 @@ export class Agent {
    * over {@link isAllowed} when you already have the path.
    */
   isAllowedPath(path: string): boolean {
+    return this.#decide(canonicalPath(path));
+  }
+
+  #decide(canonical: string): boolean {
     this.#rules ??= compileRules(collectRules(this.#file, this.#groups));
-    return isPathAllowed(this.#rules, canonicalPath(path));
+    return isPathAllowed(this.#rules, canonical);
   }
 }
 

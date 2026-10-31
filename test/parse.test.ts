@@ -431,6 +431,20 @@ describe("byte input", () => {
     expect(rulesFor(file, "a")).toEqual(["disallow /%80%FF"]);
   });
 
+  test("escapes every high byte correctly", () => {
+    for (let byte = 0x80; byte <= 0xff; byte++) {
+      const file = parseFile(bytes("user-agent: a\ndisallow: /", [0xc0, byte], "\n"));
+      const escaped = `%${byte.toString(16).toUpperCase()}`;
+      // 0xC0 is never valid UTF-8, which forces the escaping route.
+      expect(rulesFor(file, "a")).toEqual([`disallow /%C0${escaped}`]);
+    }
+  });
+
+  test("leaves ASCII alone when escaping a file", () => {
+    const file = parseFile(bytes("user-agent: a\ndisallow: /a%b c\nallow: /", [0xff], "\n"));
+    expect(rulesFor(file, "a")).toEqual(["disallow /a%b c", "allow /%FF"]);
+  });
+
   test("accepts a view into a larger buffer", () => {
     const whole = bytes("garbage\nuser-agent: a\ndisallow: /x\n");
     expect(rulesFor(parseFile(whole.subarray(8)), "a")).toEqual(["disallow /x"]);
@@ -530,6 +544,11 @@ describe("size limit", () => {
     const maxBytes = text.indexOf("\nallow");
     expect(rulesFor(parseFile(text, { maxBytes }), "a")).toEqual(["disallow /x"]);
     expect(rulesFor(parseFile(bytes(text), { maxBytes }), "a")).toEqual(["disallow /x"]);
+  });
+
+  test("a limit past a BOM still skips the BOM", () => {
+    const text = "\uFEFFuser-agent: a\ndisallow: /x\nallow: /yyyyyyyy\n";
+    expect(rulesFor(parseFile(text, { maxBytes: 28 }), "a")).toEqual(["disallow /x"]);
   });
 
   test("applies the default limit when no options are given", () => {

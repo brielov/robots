@@ -16,9 +16,8 @@ const VT = 0x0b;
 const FF = 0x0c;
 const CR = 0x0d;
 const SPACE = 0x20;
-const HASH = 0x23;
-const NUL = 0x00;
 const STAR = 0x2a;
+const PERCENT = 0x25;
 const HYPHEN = 0x2d;
 const COLON = 0x3a;
 const UNDERSCORE = 0x5f;
@@ -163,7 +162,12 @@ function readCrawlDelay(value: string): number | undefined {
   return Number.isFinite(delay) ? delay : undefined;
 }
 
-function scan(source: string, start: number, limit: number): ParsedFile {
+function findFrom(source: string, text: string, from: number): number {
+  const found = source.indexOf(text, from);
+  return found < 0 ? source.length : found;
+}
+
+function scan(source: string, start: number): ParsedFile {
   const spans: number[] = [];
   const groups: Group[] = [];
   const agents = new Map<string, number[]>();
@@ -173,36 +177,38 @@ function scan(source: string, start: number, limit: number): ParsedFile {
   // A user-agent line after a rule opens a new group; before one, it extends
   // the current group. Other records must not affect this (RFC 9309 2.2.4).
   let seenRule = false;
+  const limit = source.length;
   let pos = start;
+  let lf = -1;
+  let cr = -1;
+  let hash = -1;
+  let nul = -1;
 
   while (pos < limit) {
-    let colon = -1;
-    let contentEnd = pos;
-    let code = 0;
-    for (; contentEnd < limit; contentEnd++) {
-      code = source.charCodeAt(contentEnd);
-      if (code === HASH || code === NUL || isNewline(code)) break;
-      if (code === COLON && colon < 0) colon = contentEnd;
-    }
+    // Each search result stays valid until the scan passes it, so the file is
+    // searched once per character, in native code rather than a loop here.
+    if (lf < pos) lf = findFrom(source, "\n", pos);
+    if (cr < pos) cr = findFrom(source, "\r", pos);
+    if (hash < pos) hash = findFrom(source, "#", pos);
+    if (nul < pos) nul = findFrom(source, "\0", pos);
 
-    let next = contentEnd;
+    const lineEnd = lf < cr ? lf : cr;
     // Like Google's C string handling, NUL ends the line's content.
-    if (code === HASH || code === NUL) {
-      while (next < limit && !isNewline(source.charCodeAt(next))) next++;
-    }
-    next++;
+    const contentStop = hash < nul ? hash : nul;
+    let contentEnd = lineEnd < contentStop ? lineEnd : contentStop;
 
     let lineStart = pos;
-    pos = next;
+    pos = lineEnd + 1;
 
     while (lineStart < contentEnd && isSpace(source.charCodeAt(lineStart))) lineStart++;
     while (contentEnd > lineStart && isSpace(source.charCodeAt(contentEnd - 1))) contentEnd--;
 
-    let keyEnd: number;
+    let keyEnd = lineStart;
+    while (keyEnd < contentEnd && source.charCodeAt(keyEnd) !== COLON) keyEnd++;
+
     let valueStart: number;
-    if (colon >= 0) {
-      keyEnd = colon;
-      valueStart = colon + 1;
+    if (keyEnd < contentEnd) {
+      valueStart = keyEnd + 1;
     } else {
       // Google accepts whitespace in place of a forgotten colon, but only when
       // the line is exactly two tokens.
@@ -210,8 +216,6 @@ function scan(source: string, start: number, limit: number): ParsedFile {
       while (keyEnd < contentEnd && !isSeparator(source.charCodeAt(keyEnd))) keyEnd++;
       if (keyEnd === contentEnd) continue;
       valueStart = keyEnd;
-    }
-    if (colon < 0) {
       while (valueStart < contentEnd && isSeparator(source.charCodeAt(valueStart))) valueStart++;
       let inner = valueStart;
       while (inner < contentEnd && !isSeparator(source.charCodeAt(inner))) inner++;
@@ -285,19 +289,32 @@ function byteLimit(bytes: Uint8Array, maxBytes: number): number {
   return 0;
 }
 
+function hexDigit(value: number): number {
+  return value < 10 ? 0x30 + value : 0x37 + value;
+}
+
 /**
  * Keeps octets of a non-UTF-8 file rather than replacing them with U+FFFD:
  * percent-escaping them is the bridge RFC 9309 2.2.2 allows, so a Latin-1 rule
  * still matches the equally escaped URL.
  */
 function escapeHighBytes(bytes: Uint8Array): string {
-  let out = "";
+  let high = 0;
+  for (let i = 0; i < bytes.length; i++) if ((bytes[i] as number) >= 0x80) high++;
+
+  const escaped = new Uint8Array(bytes.length + high * 2);
+  let length = 0;
   for (let i = 0; i < bytes.length; i++) {
     const byte = bytes[i] as number;
-    if (byte < 0x80) out += String.fromCharCode(byte);
-    else out += `%${byte.toString(16).toUpperCase()}`;
+    if (byte < 0x80) {
+      escaped[length++] = byte;
+    } else {
+      escaped[length++] = PERCENT;
+      escaped[length++] = hexDigit(byte >> 4);
+      escaped[length++] = hexDigit(byte & 0xf);
+    }
   }
-  return out;
+  return new TextDecoder().decode(escaped);
 }
 
 function decode(bytes: Uint8Array, maxBytes: number): string {
@@ -325,11 +342,12 @@ export function parseFile(input: string | Uint8Array, options?: ParseOptions): P
   if (!(limit >= 0)) throw new RangeError(`Invalid maxBytes: ${limit}`);
   const maxBytes = Math.floor(limit);
   if (typeof input === "string") {
-    const start = input.charCodeAt(0) === BOM ? 1 : 0;
-    return scan(input, start, stringLimit(input, maxBytes));
+    const limit = stringLimit(input, maxBytes);
+    // Cutting the input first means searches can't run past the limit.
+    const source = limit === input.length ? input : input.slice(0, limit);
+    return scan(source, source.charCodeAt(0) === BOM ? 1 : 0);
   }
-  const source = decode(input, maxBytes);
-  return scan(source, 0, source.length);
+  return scan(decode(input, maxBytes), 0);
 }
 
 /** Lists the rules for a set of groups in file order, with their raw patterns. */

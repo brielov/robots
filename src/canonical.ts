@@ -41,17 +41,23 @@ const KEEP_FINAL_DOLLAR = 2;
 const IN_QUERY = 4;
 
 /**
- * Marks ASCII characters that can't be copied as they are: control characters,
- * space, `#`, `%`, and the characters neither reserved nor unreserved by
- * RFC 3986, plus the `$`, `*` and `'` exceptions described above.
+ * Sorts ASCII characters for scanning. `CHAR_SPECIAL` marks those that can't be
+ * copied as they are: control characters, space, `#`, `%`, the characters neither
+ * reserved nor unreserved by RFC 3986, and the `$`, `*` and `'` exceptions above.
+ * The other two classes matter only to the scan in `canonicalPath`.
  */
-const SPECIAL = /* @__PURE__ */ buildSpecialTable();
+const CHAR_SPECIAL = 1;
+const CHAR_DOT = 2;
+const CHAR_QUESTION = 3;
+const CHARS = /* @__PURE__ */ buildCharTable();
 
-function buildSpecialTable(): Uint8Array {
+function buildCharTable(): Uint8Array {
   const table = new Uint8Array(128);
-  table.fill(1, 0, 0x21);
-  table[0x7f] = 1;
-  for (const char of "\"#$%'*<>\\^`{|}") table[char.charCodeAt(0)] = 1;
+  table.fill(CHAR_SPECIAL, 0, 0x21);
+  table[0x7f] = CHAR_SPECIAL;
+  for (const char of "\"#$%'*<>\\^`{|}") table[char.charCodeAt(0)] = CHAR_SPECIAL;
+  table[DOT] = CHAR_DOT;
+  table[QUESTION] = CHAR_QUESTION;
   return table;
 }
 
@@ -115,7 +121,7 @@ function encode(text: string, flags: number): string {
 
   for (let i = 0; i < length; i++) {
     const code = text.charCodeAt(i);
-    if (code < 0x80 && SPECIAL[code] === 0) continue;
+    if (code < 0x80 && CHARS[code] !== CHAR_SPECIAL) continue;
     if (code === STAR && (flags & KEEP_STAR) !== 0) continue;
     if (code === DOLLAR && i === length - 1 && (flags & KEEP_FINAL_DOLLAR) !== 0) continue;
 
@@ -175,6 +181,8 @@ export function decodeQueryDelimiters(text: string): string {
 
 /** Resolves `.` and `..` segments, as a client does before sending a request. */
 function removeDotSegments(path: string): string {
+  if (!path.includes("/.")) return path;
+
   const segments = path.split("/");
   const output: string[] = [];
   for (let i = 1; i < segments.length; i++) {
@@ -208,7 +216,7 @@ export function stripIgnored(text: string): string {
       runStart = i + 1;
     }
   }
-  return out + text.slice(runStart, end);
+  return runStart === 0 && end === text.length ? text : out + text.slice(runStart, end);
 }
 
 function canonicalizeSlowly(input: string): string {
@@ -231,18 +239,22 @@ function canonicalizeSlowly(input: string): string {
  * as it is when a scan shows it is already canonical.
  */
 export function canonicalPath(path: string): string {
-  const length = path.length;
-  if (length === 0) return "/";
-  if (path.charCodeAt(0) !== SLASH) return canonicalizeSlowly(path);
+  if (path.length === 0) return "/";
+  return path.charCodeAt(0) === SLASH && isCanonicalFrom(path, 1) ? path : canonicalizeSlowly(path);
+}
 
+/** Scans text that starts a path at `start - 1` for anything to canonicalize. */
+export function isCanonicalFrom(text: string, start: number): boolean {
+  const length = text.length;
   let inQuery = false;
-  for (let i = 1; i < length; i++) {
-    const code = path.charCodeAt(i);
-    if (code >= 0x80 || SPECIAL[code] !== 0) return canonicalizeSlowly(path);
-    if (code === QUESTION) inQuery = true;
-    else if (code === DOT && !inQuery && path.charCodeAt(i - 1) === SLASH) {
-      return canonicalizeSlowly(path);
-    }
+  for (let i = start; i < length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0x80) return false;
+    const kind = CHARS[code];
+    if (kind === 0) continue;
+    if (kind === CHAR_SPECIAL) return false;
+    if (kind === CHAR_QUESTION) inQuery = true;
+    else if (!inQuery && text.charCodeAt(i - 1) === SLASH) return false;
   }
-  return path;
+  return true;
 }

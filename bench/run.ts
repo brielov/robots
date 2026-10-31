@@ -12,9 +12,8 @@
  * A single process can't see small changes: the same code can land up to about
  * 17% apart between processes. Compare with `bun bench/spread.ts`.
  */
-import { canonicalPath } from "../src/canonical.ts";
 import { parse } from "../src/index.ts";
-import { requestPath } from "../src/url.ts";
+import { canonicalRequestPath } from "../src/url.ts";
 import { corpusHash, loadCorpus, loadSynthetic, type Site } from "./workload.ts";
 
 const AGENT = "Googlebot";
@@ -237,7 +236,7 @@ function runSuite(suite: string, sites: readonly Site[], baseline: Baseline | un
       for (const site of sites) {
         const { urls } = site;
         for (let j = 0; j < urls.length; j++) {
-          sink += canonicalPath(requestPath(urls[j] as string)).length;
+          sink += canonicalRequestPath(urls[j] as string).length;
         }
       }
     }),
