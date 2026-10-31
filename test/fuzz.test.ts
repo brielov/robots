@@ -169,6 +169,38 @@ describe("differential fuzz against the reference matcher", () => {
   });
 });
 
+describe("differential fuzz with many overlapping prefixes", () => {
+  // Builds rule sets where literals nest and interleave, to exercise the sorted
+  // prefix index, its ancestor links, and ranks competing across rule kinds.
+  test.each([41, 42, 43, 44, 45])("seed %d", (seed) => {
+    const random = createRandom(seed);
+    for (let file = 0; file < 800; file++) {
+      const rules: Rule[] = [];
+      const ruleCount = 1 + random(60);
+      let text = "user-agent: *\n";
+      for (let i = 0; i < ruleCount; i++) {
+        const shape = random(10);
+        let pattern = `/${randomText(random, "ab/", 7)}`;
+        if (shape === 0) pattern += "$";
+        else if (shape === 1) pattern += "**";
+        else if (shape === 2) pattern = `/*${randomText(random, "ab/", 4)}`;
+        else if (shape === 3) pattern += `*${randomText(random, "ab", 2)}$`;
+        const rule = { allow: random(2) === 0, pattern };
+        rules.push(rule);
+        text += `${rule.allow ? "allow" : "disallow"}: ${rule.pattern}\n`;
+      }
+      const agent = parse(text).agent("x");
+      for (let i = 0; i < 25; i++) {
+        const path = `/${randomText(random, "ab/", 9)}`;
+        if (agent.isAllowedPath(path) !== referenceAllowed(rules, path)) {
+          throw new Error(`seed ${seed}, path ${JSON.stringify(path)}, file:\n${text}`);
+        }
+      }
+    }
+    expect(true).toBe(true);
+  });
+});
+
 describe("differential fuzz with canonicalization in play", () => {
   // The reference runs on canonical text, so this shares canonicalization with
   // the code under test and checks that the matcher and the canonical form

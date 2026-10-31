@@ -1,9 +1,20 @@
 /**
- * Compiles the rules of one user agent into a flat, sorted list.
+ * Compiles the rules of one user agent for matching.
  *
- * Rules are ordered so that the first one to match is the one RFC 9309 says
- * must win: longest pattern first, `Allow` first on a tie. Matching can then
- * stop at the first hit.
+ * Every rule gets a rank: its place in the order where the best rule comes
+ * first, which is longest pattern first, `Allow` first on a tie, as RFC 9309
+ * requires. A decision is then the lowest rank among the rules that match.
+ *
+ * Finding that doesn't mean trying every rule, which matters because most URLs
+ * match nothing, the case where trying rules in rank order can't stop early:
+ *
+ * - Prefix rules are sorted by text. Any prefix of a path sorts at or before the
+ *   path, and everything between them shares that prefix, so the prefixes of a
+ *   path are all ancestors of its sorted predecessor. Each entry stores the best
+ *   rank among itself and its ancestors, so one binary search answers for them.
+ * - Exact rules are looked up by their text.
+ * - Wildcard rules are tried in rank order, only until they rank below the best
+ *   match so far.
  *
  * Patterns are matched without regular expressions. They are untrusted input,
  * and since `*` is the only metacharacter, taking the earliest end for each
@@ -12,10 +23,6 @@
 
 import { canonicalPattern, decodeQueryDelimiters } from "./canonical.ts";
 import type { RawRule } from "./parse.ts";
-
-const KIND_PREFIX = 0;
-const KIND_EXACT = 1;
-const KIND_WILDCARD = 2;
 
 const STAR = "*";
 const DOLLAR = "$";
@@ -27,20 +34,35 @@ interface SortableRule {
 }
 
 export interface CompiledRules {
+  /** Rule count, which also serves as the rank of "no rule". */
   count: number;
-  kinds: Uint8Array;
+  /** Whether each rank is an `Allow` rule. */
   allows: Uint8Array;
-  /** The literal for prefix and exact rules; "" for wildcard rules. */
-  literals: string[];
-  /** The `*`-separated segments of each rule; only wildcard rules use them. */
+  /** Prefix rule literals, sorted. */
+  prefixes: string[];
+  prefixLengths: Int32Array;
+  /** The nearest earlier entry that is a prefix of each entry, or -1. */
+  parents: Int32Array;
+  /** The best rank among each entry and its ancestors. */
+  bestRanks: Int32Array;
+  /** Exact rule literals, to their ranks. */
+  exact: Map<string, number>;
+  /** The rank of each wildcard rule, ascending. */
+  wildcardRanks: Int32Array;
+  /** The `*`-separated segments of each wildcard rule. */
   segments: string[][];
   /**
-   * How each segment reads inside a query, for the rare wildcard rule where
-   * that differs. Holds `NO_SEGMENTS` for every other rule.
+   * How each segment reads inside a query, for the rare rule where that differs.
+   * Holds `NO_SEGMENTS` for every other rule.
    */
   querySegments: string[][];
   /** Whether a wildcard rule must reach the end of the path. */
   anchored: Uint8Array;
+}
+
+interface PrefixEntry {
+  literal: string;
+  rank: number;
 }
 
 const NO_SEGMENTS: string[] = [];
@@ -59,22 +81,51 @@ function prepareRules(rules: readonly RawRule[]): SortableRule[] {
   });
 }
 
+/** Lays out prefix entries for `bestPrefixRank`. */
+function indexPrefixes(entries: PrefixEntry[], count: number) {
+  entries.sort((a, b) => (a.literal < b.literal ? -1 : a.literal > b.literal ? 1 : 0));
+
+  const size = entries.length;
+  const prefixes: string[] = [];
+  const prefixLengths = new Int32Array(size);
+  const parents = new Int32Array(size);
+  const bestRanks = new Int32Array(size);
+  // The chain of entries that are prefixes of the current one.
+  const chain: number[] = [];
+
+  for (let i = 0; i < size; i++) {
+    const { literal, rank } = entries[i] as PrefixEntry;
+    while (chain.length > 0 && !literal.startsWith(prefixes[chain.at(-1) as number] as string)) {
+      chain.pop();
+    }
+    const parent = chain.at(-1) ?? -1;
+    prefixes.push(literal);
+    prefixLengths[i] = literal.length;
+    parents[i] = parent;
+    bestRanks[i] = Math.min(rank, parent < 0 ? count : (bestRanks[parent] as number));
+    chain.push(i);
+  }
+
+  return { prefixes, prefixLengths, parents, bestRanks };
+}
+
 export function compileRules(rawRules: readonly RawRule[]): CompiledRules {
   const rules = prepareRules(rawRules);
   const count = rules.length;
-  const kinds = new Uint8Array(count);
   const allows = new Uint8Array(count);
-  const anchored = new Uint8Array(count);
-  const literals: string[] = [];
+  const entries: PrefixEntry[] = [];
+  const exact = new Map<string, number>();
+  const wildcardRanks: number[] = [];
+  const anchored: number[] = [];
   const segments: string[][] = [];
   const querySegments: string[][] = [];
 
-  for (let i = 0; i < count; i++) {
-    const rule = rules[i] as SortableRule;
-    allows[i] = rule.allow ? 1 : 0;
+  for (let rank = 0; rank < count; rank++) {
+    const rule = rules[rank] as SortableRule;
+    allows[rank] = rule.allow ? 1 : 0;
 
-    // A pattern's priority is fixed by the sort above, so the simplifications
-    // below can't change which rule wins.
+    // A pattern's rank is fixed by the sort above, so the simplifications below
+    // can't change which rule wins.
     let pattern = rule.canonical.replace(/\*{2,}/g, STAR);
     let isAnchored = pattern.endsWith(DOLLAR);
     if (isAnchored) pattern = pattern.slice(0, -1);
@@ -85,24 +136,31 @@ export function compileRules(rawRules: readonly RawRule[]): CompiledRules {
     }
 
     if (pattern.includes(STAR)) {
-      kinds[i] = KIND_WILDCARD;
-      anchored[i] = isAnchored ? 1 : 0;
-      literals.push("");
       const parts = pattern.split(STAR);
       const decoded = parts.map(decodeQueryDelimiters);
+      wildcardRanks.push(rank);
+      anchored.push(isAnchored ? 1 : 0);
       segments.push(parts);
       querySegments.push(
         decoded.some((part, index) => part !== parts[index]) ? decoded : NO_SEGMENTS,
       );
+    } else if (isAnchored) {
+      exact.set(pattern, rank);
     } else {
-      kinds[i] = isAnchored ? KIND_EXACT : KIND_PREFIX;
-      literals.push(pattern);
-      segments.push(NO_SEGMENTS);
-      querySegments.push(NO_SEGMENTS);
+      entries.push({ literal: pattern, rank });
     }
   }
 
-  return { count, kinds, allows, literals, segments, querySegments, anchored };
+  return {
+    count,
+    allows,
+    ...indexPrefixes(entries, count),
+    exact,
+    wildcardRanks: Int32Array.from(wildcardRanks),
+    segments,
+    querySegments,
+    anchored: Uint8Array.from(anchored),
+  };
 }
 
 function matchesWildcard(path: string, segments: readonly string[], anchored: boolean): boolean {
@@ -174,27 +232,55 @@ function matchesWildcardInQuery(
   return path.indexOf(final, position) >= 0 || path.indexOf(queryFinal, queryPosition) >= 0;
 }
 
+/** Returns the best rank among the prefix rules matching a path. */
+function bestPrefixRank(rules: CompiledRules, path: string): number {
+  const { prefixes, prefixLengths, parents, bestRanks } = rules;
+
+  // Finds the last entry that sorts at or before the path.
+  let low = 0;
+  let high = prefixes.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((prefixes[middle] as string) <= path) low = middle + 1;
+    else high = middle;
+  }
+  let entry = low - 1;
+  if (entry < 0) return rules.count;
+
+  // An ancestor is a prefix of the path if it fits in what the two share.
+  const predecessor = prefixes[entry] as string;
+  const limit = Math.min(predecessor.length, path.length);
+  let shared = 0;
+  while (shared < limit && predecessor.charCodeAt(shared) === path.charCodeAt(shared)) shared++;
+
+  while (entry >= 0 && (prefixLengths[entry] as number) > shared) entry = parents[entry] as number;
+  return entry < 0 ? rules.count : (bestRanks[entry] as number);
+}
+
 /** Decides a canonical path. */
 export function isPathAllowed(rules: CompiledRules, path: string): boolean {
-  const { count, kinds, allows, literals, segments, querySegments, anchored } = rules;
-  for (let i = 0; i < count; i++) {
-    let matched: boolean;
-    switch (kinds[i]) {
-      case KIND_PREFIX:
-        matched = path.startsWith(literals[i] as string);
-        break;
-      case KIND_EXACT:
-        matched = path === literals[i];
-        break;
-      default: {
-        const decoded = querySegments[i] as string[];
-        matched =
-          decoded === NO_SEGMENTS
-            ? matchesWildcard(path, segments[i] as string[], anchored[i] === 1)
-            : matchesWildcardInQuery(path, segments[i] as string[], decoded, anchored[i] === 1);
-      }
-    }
-    if (matched) return allows[i] === 1 || path === ROBOTS_PATH;
+  const { count, allows, exact, wildcardRanks, segments, querySegments, anchored } = rules;
+
+  let best = bestPrefixRank(rules, path);
+
+  if (exact.size > 0) {
+    const rank = exact.get(path);
+    if (rank !== undefined && rank < best) best = rank;
   }
-  return true;
+
+  for (let i = 0; i < wildcardRanks.length; i++) {
+    const rank = wildcardRanks[i] as number;
+    if (rank >= best) break;
+    const decoded = querySegments[i] as string[];
+    const matched =
+      decoded === NO_SEGMENTS
+        ? matchesWildcard(path, segments[i] as string[], anchored[i] === 1)
+        : matchesWildcardInQuery(path, segments[i] as string[], decoded, anchored[i] === 1);
+    if (matched) {
+      best = rank;
+      break;
+    }
+  }
+
+  return best === count || allows[best] === 1 || path === ROBOTS_PATH;
 }

@@ -132,16 +132,14 @@ describe("canonicalPath", () => {
 describe("compiled rules", () => {
   const rules = (...patterns: string[]) => patterns.map((pattern) => ({ allow: false, pattern }));
 
-  test("sorts longest first, with allow first on a tie", () => {
+  test("the longest rule wins over any rule order", () => {
     const compiled = compileRules([
       { allow: false, pattern: "/a" },
-      { allow: false, pattern: "/longer" },
-      { allow: false, pattern: "/b" },
-      { allow: true, pattern: "/c" },
+      { allow: true, pattern: "/a/longer" },
+      { allow: false, pattern: "/a/" },
     ]);
-    expect(compiled.literals[0]).toBe("/longer");
-    expect(compiled.literals[1]).toBe("/c");
-    expect(compiled.allows[1]).toBe(1);
+    expect(isPathAllowed(compiled, "/a/longer/x")).toBe(true);
+    expect(isPathAllowed(compiled, "/a/shorter")).toBe(false);
   });
 
   test("drops duplicates", () => {
@@ -157,13 +155,11 @@ describe("compiled rules", () => {
     expect(compiled.allows[0]).toBe(1);
   });
 
-  test("classifies rules", () => {
+  test("files each kind of rule in its own index", () => {
     const compiled = compileRules(rules("/prefix", "/exact$", "/wild*card"));
-    expect(compiled.kinds[compiled.literals.indexOf("/prefix")]).toBe(0);
-    expect(compiled.kinds[compiled.literals.indexOf("/exact")]).toBe(1);
-    expect(compiled.segments.filter((segments) => segments.length > 0)).toEqual([
-      ["/wild", "card"],
-    ]);
+    expect(compiled.prefixes).toEqual(["/prefix"]);
+    expect([...compiled.exact.keys()]).toEqual(["/exact"]);
+    expect(compiled.segments).toEqual([["/wild", "card"]]);
   });
 
   test.each([
@@ -174,9 +170,7 @@ describe("compiled rules", () => {
     ["/*", "/"],
     ["*", ""],
   ])("%j reduces to the prefix %j", (pattern, literal) => {
-    const compiled = compileRules(rules(pattern));
-    expect(compiled.kinds[0]).toBe(0);
-    expect(compiled.literals[0]).toBe(literal);
+    expect(compileRules(rules(pattern)).prefixes).toEqual([literal]);
   });
 
   test("simplifying a pattern keeps its priority", () => {
@@ -194,6 +188,157 @@ describe("compiled rules", () => {
       { allow: true, pattern: "/a" },
     ]);
     expect(isPathAllowed(compiled, "/a")).toBe(true);
+  });
+});
+
+describe("prefix index", () => {
+  const decide = (rules: [boolean, string][], path: string): boolean =>
+    isPathAllowed(compileRules(rules.map(([allow, pattern]) => ({ allow, pattern }))), path);
+
+  test("links entries to the longest prefix among them", () => {
+    const { prefixes, parents } = compileRules(
+      ["/a", "/a/b", "/a/b/c", "/a/d", "/b"].map((pattern) => ({ allow: false, pattern })),
+    );
+    const parentOf = (literal: string): string | undefined =>
+      prefixes[parents[prefixes.indexOf(literal)] as number];
+    expect(parentOf("/a")).toBeUndefined();
+    expect(parentOf("/a/b")).toBe("/a");
+    expect(parentOf("/a/b/c")).toBe("/a/b");
+    expect(parentOf("/a/d")).toBe("/a");
+    expect(parentOf("/b")).toBeUndefined();
+  });
+
+  test("a path sorting after a sibling still finds the shared ancestor", () => {
+    const rules: [boolean, string][] = [
+      [false, "/a"],
+      [true, "/a/b/c"],
+    ];
+    expect(decide(rules, "/a/b/d")).toBe(false);
+    expect(decide(rules, "/a/b/c/d")).toBe(true);
+  });
+
+  test("a sibling sorting between prefix and path doesn't hide the prefix", () => {
+    expect(
+      decide(
+        [
+          [false, "/a"],
+          [true, "/a/x"],
+          [true, "/a/y"],
+        ],
+        "/a/z",
+      ),
+    ).toBe(false);
+  });
+
+  test("a shorter literal can outrank a longer one", () => {
+    // "/a*****" compiles to "/a" but counts as seven octets, beating "/ab".
+    const rules: [boolean, string][] = [
+      [false, "/a*****"],
+      [true, "/ab"],
+    ];
+    expect(decide(rules, "/ab")).toBe(false);
+  });
+
+  test("an ancestor's rank carries past an entry that doesn't match", () => {
+    const rules: [boolean, string][] = [
+      [false, "/a*****"],
+      [true, "/ab"],
+      [true, "/abc"],
+    ];
+    expect(decide(rules, "/abx")).toBe(false);
+    expect(decide(rules, "/ax")).toBe(false);
+  });
+
+  test("a path sorting before every entry has no match", () => {
+    expect(decide([[false, "/b"]], "/a")).toBe(true);
+  });
+
+  test("a path sorting after every entry can still match", () => {
+    expect(decide([[false, "/a"]], "/zzz")).toBe(true);
+    expect(decide([[false, "/a"]], "/a/zzz")).toBe(false);
+  });
+
+  test("a path shorter than its predecessor is handled", () => {
+    expect(
+      decide(
+        [
+          [false, "/"],
+          [true, "/aaa"],
+        ],
+        "/aa",
+      ),
+    ).toBe(false);
+  });
+
+  test("an empty literal matches everything", () => {
+    expect(decide([[false, "*"]], "/x")).toBe(false);
+    expect(
+      decide(
+        [
+          [false, "*"],
+          [true, "/x"],
+        ],
+        "/x",
+      ),
+    ).toBe(true);
+  });
+
+  test("the prefix and exact forms of one literal coexist", () => {
+    const rules: [boolean, string][] = [
+      [true, "/a$"],
+      [false, "/a"],
+    ];
+    expect(decide(rules, "/a")).toBe(true);
+    expect(decide(rules, "/ab")).toBe(false);
+  });
+
+  test("an exact rule and a longer wildcard compete on rank", () => {
+    const rules: [boolean, string][] = [
+      [true, "/a$"],
+      [false, "/*a"],
+    ];
+    expect(decide(rules, "/a")).toBe(true);
+    const longer: [boolean, string][] = [
+      [true, "/a$"],
+      [false, "/**a*"],
+    ];
+    expect(decide(longer, "/a")).toBe(false);
+  });
+
+  test("a wildcard ranking below the best prefix isn't consulted", () => {
+    expect(
+      decide(
+        [
+          [true, "/abcd"],
+          [false, "/*d"],
+        ],
+        "/abcd",
+      ),
+    ).toBe(true);
+  });
+
+  test("a wildcard ranking above the best prefix wins", () => {
+    expect(
+      decide(
+        [
+          [true, "/a"],
+          [false, "/*abcd"],
+        ],
+        "/abcd",
+      ),
+    ).toBe(false);
+  });
+
+  test("decides correctly at every depth of a long chain", () => {
+    const compiled = compileRules(
+      Array.from({ length: 2_000 }, (_, i) => ({
+        allow: i % 2 === 0,
+        pattern: `/${"a".repeat(i)}`,
+      })),
+    );
+    for (const depth of [0, 1, 2, 3, 500, 501, 1_000, 1_001, 1_998, 1_999]) {
+      expect(isPathAllowed(compiled, `/${"a".repeat(depth)}b`)).toBe(depth % 2 === 0);
+    }
   });
 });
 
