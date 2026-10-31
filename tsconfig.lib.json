@@ -1,0 +1,11 @@
+{
+  // Type-checks library code against a runtime-neutral environment. It has no
+  // Bun or Node types, so a runtime-specific API in src/ is a compile error.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "WebWorker"],
+    "target": "ES2022",
+    "types": []
+  },
+  "include": ["src"]
+}
