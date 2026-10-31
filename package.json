@@ -1,17 +1,29 @@
 {
   "name": "robots",
   "version": "0.0.0",
+  "description": "A small, fast, zero-dependency robots.txt parser and matcher for any JavaScript runtime.",
   "type": "module",
   "private": true,
   "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "typecheck": "bun check && bun check -p tsconfig.lib.json",
-    "lint": "oxlint --type-aware src test bench",
-    "fmt": "oxfmt src test bench",
+    "lint": "oxlint --type-aware src test bench scripts",
+    "fmt": "oxfmt src test bench scripts",
     "test": "bun test",
     "bench": "bun bench/run.ts",
     "bench:node": "node bench/run.ts",
-    "bench:corpus": "bun bench/fetch-corpus.ts"
+    "bench:corpus": "bun bench/fetch-corpus.ts",
+    "build": "bun scripts/build.ts",
+    "test:dist": "bun run build && bun test/smoke/smoke.mjs && node test/smoke/smoke.mjs"
   },
   "devDependencies": {
     "@types/bun": "latest",
