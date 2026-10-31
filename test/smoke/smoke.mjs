@@ -1,6 +1,6 @@
 // Runs the built package using nothing but the language, so it works in any
 // runtime. `bun run build` first.
-import { parse, robotsForStatus } from "robots";
+import { parse, robotsForStatus } from "../../dist/index.js";
 
 function check(name, actual, expected) {
   if (actual !== expected) throw new Error(`${name}: got ${actual}, expected ${expected}`);

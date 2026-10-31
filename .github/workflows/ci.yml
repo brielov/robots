@@ -28,4 +28,4 @@ jobs:
       - run: bun run build
       - run: bun test/smoke/smoke.mjs
       - run: node test/smoke/smoke.mjs
-      - run: deno run --allow-read=. test/smoke/smoke-deno.mjs
+      - run: deno run --allow-read=. test/smoke/smoke.mjs
